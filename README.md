@@ -69,20 +69,52 @@ npm run cli -- networks
 
 One core, three delivery surfaces, one shared SQLite database.
 
-```
-                       ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-      SURFACES         │   HTTP API   │  │  MCP server  │  │     CLI      │
-                       │ api/server.ts│  │ mcp/server.ts│  │   cli.ts     │
-                       └──────┬───────┘  └──────┬───────┘  └──────┬───────┘
-                              └─────────────────┼─────────────────┘
-                                     registry/service.ts  (facade: submit / verify / inspect)
-      CORE        ┌───────────────┬───────────────┬───────────────┬───────────────┐
-                  │   registry/   │    verify/    │    search/    │    trust/      │
-                  │   normalize   │   probe       │   search      │   score        │
-                  │   repository  │   schema-check│   embeddings  │   (layered     │
-                  │   validation  │   domain      │   (seam)      │    trust model)│
-                  └───────────────┴───────┬───────┴───────────────┴───────────────┘
-      DATA               db/ (drizzle + better-sqlite3)   config/networks.ts   util/ (http, x402, ssrf)
+```mermaid
+flowchart TD
+    API["HTTP API<br/>api/server.ts"]:::surface
+    MCP["MCP server<br/>mcp/server.ts"]:::surface
+    CLI["CLI<br/>cli.ts"]:::surface
+
+    Facade["Service facade<br/>registry/service.ts<br/>submit · verify · inspect"]:::facade
+
+    subgraph Core["Core"]
+        direction LR
+        Registry["registry/<br/>normalize · repository · validation"]:::core
+        Verify["verify/<br/>probe · schema-check · domain · runner"]:::core
+        SearchM["search/<br/>search · embeddings (seam)"]:::core
+        Trust["trust/<br/>score — layered trust"]:::core
+    end
+
+    subgraph Data["Data & infra"]
+        direction LR
+        DB[("SQLite<br/>drizzle + better-sqlite3")]:::data
+        Net["config/networks.ts"]:::data
+        Util["util/<br/>http · x402 · ssrf"]:::data
+    end
+
+    API --> Facade
+    MCP --> Facade
+    CLI --> Facade
+    API --> SearchM
+    MCP --> SearchM
+    CLI --> SearchM
+
+    Facade --> Registry
+    Facade --> Verify
+
+    Verify --> Util
+    Verify --> Trust
+    Verify --> Net
+    Verify --> Registry
+    Registry --> Net
+    Registry --> DB
+    SearchM --> Registry
+    SearchM --> Trust
+
+    classDef surface fill:#6E40C9,color:#ffffff,stroke:#4C2889,stroke-width:1px;
+    classDef facade fill:#E36002,color:#ffffff,stroke:#9c4302,stroke-width:1px;
+    classDef core fill:#1f6feb,color:#ffffff,stroke:#1158c7,stroke-width:1px;
+    classDef data fill:#003B57,color:#ffffff,stroke:#012332,stroke-width:1px;
 ```
 
 | Path | Responsibility |
