@@ -14,7 +14,7 @@ import { handle } from '@hono/node-server/vercel';
 import { Hono } from 'hono';
 import { app } from '../src/api/server.js';
 import { registerBuyersFromEnv } from '../src/buyer/register.js';
-import { persistDb, restoreDb } from '../src/db/blob-persist.js';
+import { persistDb, restoreDb, syncForWrite } from '../src/db/blob-persist.js';
 
 export const runtime = 'nodejs';
 
@@ -24,7 +24,10 @@ const MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
 const vercelApp = new Hono();
 vercelApp.use(async (c, next) => {
-  await restoreDb();
+  // Writes first re-sync to the newest snapshot so a stale warm instance
+  // can't silently revert mutations persisted by other instances.
+  if (MUTATING.has(c.req.method)) await syncForWrite();
+  else await restoreDb();
   await next();
   if (MUTATING.has(c.req.method)) await persistDb();
 });

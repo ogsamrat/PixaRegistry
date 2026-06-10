@@ -16,7 +16,7 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { getDbPath, getRawDb } from './client.js';
+import { closeDb, getDbPath, getRawDb } from './client.js';
 
 const PREFIX = 'pixa-db/';
 const KEEP_SNAPSHOTS = 5;
@@ -27,6 +27,8 @@ function enabled(): boolean {
 }
 
 let restored: Promise<void> | null = null;
+/** Newest snapshot pathname this process has seen (restored from or uploaded). */
+let lastSeenSnapshot: string | null = null;
 
 /** Download the latest DB snapshot once per process (no-op when disabled). */
 export function restoreDb(): Promise<void> {
@@ -48,9 +50,38 @@ async function doRestore(): Promise<void> {
     const buf = Buffer.from(await res.arrayBuffer());
     mkdirSync(dirname(dbPath), { recursive: true });
     writeFileSync(dbPath, buf);
+    lastSeenSnapshot = latest.pathname;
     console.log(`[blob-persist] restored ${latest.pathname} (${buf.length} bytes)`);
   } catch (err) {
     console.error('[blob-persist] restore failed (starting empty):', err);
+  }
+}
+
+/**
+ * Re-sync from the blob store before a WRITE: a warm instance may hold a DB
+ * older than the newest snapshot (another instance persisted since we
+ * restored), and persisting on top of stale data would silently revert those
+ * mutations. Safe to swap the file here because better-sqlite3 is synchronous:
+ * no statement is ever mid-flight while this async code runs.
+ */
+export async function syncForWrite(): Promise<void> {
+  if (!enabled()) return;
+  await restoreDb();
+  try {
+    const { list } = await import('@vercel/blob');
+    const { blobs } = await list({ prefix: PREFIX, limit: 1000 });
+    if (blobs.length === 0) return;
+    const latest = blobs.reduce((a, b) => (a.pathname > b.pathname ? a : b));
+    if (latest.pathname === lastSeenSnapshot) return; // already current
+    const res = await fetch(latest.url);
+    if (!res.ok) throw new Error(`blob fetch ${res.status}`);
+    const buf = Buffer.from(await res.arrayBuffer());
+    closeDb();
+    writeFileSync(getDbPath(), buf);
+    lastSeenSnapshot = latest.pathname;
+    console.log(`[blob-persist] write-sync to ${latest.pathname} (${buf.length} bytes)`);
+  } catch (err) {
+    console.error('[blob-persist] write-sync failed (continuing with local state):', err);
   }
 }
 
@@ -86,6 +117,7 @@ async function doPersist(): Promise<void> {
       addRandomSuffix: false,
       contentType: 'application/octet-stream',
     });
+    lastSeenSnapshot = pathname;
     // Best-effort prune: keep the newest snapshots, never touch recent ones.
     const { blobs } = await list({ prefix: PREFIX, limit: 1000 });
     const sorted = [...blobs].sort((a, b) => (a.pathname < b.pathname ? 1 : -1));
