@@ -10,7 +10,7 @@ import type { ChainFamily, NetworkInfo, WalletCompatibility } from '../types.js'
 
 // Algorand genesis-hash CAIP-2 ids (match the pixa-api seller project).
 export const ALGORAND_TESTNET_CAIP2 = 'algorand:SGO1GKSzyE7IEPItTxCByw9x8FmnrCDexi9/cOUJOiI=';
-export const ALGORAND_MAINNET_CAIP2 = 'algorand:wGHE2Pwdvd7S12BL5FaOP20EGYesN73ktiC1qkit8=';
+export const ALGORAND_MAINNET_CAIP2 = 'algorand:wGHE2Pwdvd7S12BL5FaOP20EGYesN73ktiC1qzkkit8=';
 
 export const NETWORKS: NetworkInfo[] = [
   {

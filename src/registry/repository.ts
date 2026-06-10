@@ -109,6 +109,15 @@ export function updateServiceVerification(
     .run();
 }
 
+/** Apply payment metadata discovered from a live 402 challenge (blanks only). */
+export function updateServicePayment(serviceId: string, patch: Partial<ServiceRecord>): void {
+  const db = getDb();
+  db.update(services)
+    .set({ ...patch, updatedAt: new Date().toISOString() })
+    .where(eq(services.serviceId, serviceId))
+    .run();
+}
+
 // ── probe runs ───────────────────────────────────────────────────────────────
 
 export function recordProbeRun(serviceId: string, result: ProbeResult): ProbeRun {

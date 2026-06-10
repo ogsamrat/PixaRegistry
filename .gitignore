@@ -3,9 +3,13 @@ dist/
 *.log
 .env
 .env.local
+.env.vercel
+.vercel/
 # SQLite database files (created at runtime)
 data/
 *.db
 *.db-journal
 *.db-wal
 *.db-shm
+
+.vercel

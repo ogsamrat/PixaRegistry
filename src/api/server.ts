@@ -1,7 +1,12 @@
 // =============================================================================
 // HTTP API (Hono) — the public delivery surface.
 //
-//   GET  /                      service info + endpoint directory
+// Every route is mounted at BOTH `/` (back-compat for agents/CLI) and `/api`
+// (used by the seller web UI). When `web/dist` exists the server also serves
+// the built UI: hashed assets under /assets/* and an SPA fallback that returns
+// index.html for browser (text/html) GET navigation.
+//
+//   GET  /                      service info + endpoint directory (JSON clients)
 //   GET  /health                liveness
 //   GET  /networks              supported networks (multichain compatibility)
 //   GET  /categories            categories with domain validators
@@ -14,9 +19,13 @@
 //   GET  /search                ranked, agent-optimized result cards
 // =============================================================================
 
+import { existsSync, readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Hono, type Context } from 'hono';
 import { cors } from 'hono/cors';
 import { getConnInfo } from '@hono/node-server/conninfo';
+import { serveStatic } from '@hono/node-server/serve-static';
 import type { ChainFamily, PaymentScheme, SearchFilters, SearchQuery, TrustTier, WalletCompatibility } from '../types.js';
 import { listNetworks } from '../config/networks.js';
 import { listValidatedCategories } from '../verify/domain.js';
@@ -32,6 +41,10 @@ import { listFiltered, search } from '../search/search.js';
 
 export const app = new Hono();
 
+// ── seller web UI (optional, built into web/dist) ─────────────────────────────
+const WEB_DIST = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../web/dist');
+const HAS_UI = existsSync(path.join(WEB_DIST, 'index.html'));
+
 // CORS: allowlist via PIXA_CORS_ORIGINS (comma-separated); defaults to open for
 // the public read API but echoes only configured origins when set.
 const CORS_ORIGINS = (process.env.PIXA_CORS_ORIGINS ?? '*')
@@ -46,6 +59,13 @@ app.use(
     },
   }),
 );
+
+// Hashed immutable assets — registered before the rate limiter on purpose: a
+// single page load fetches several assets and must not eat into the API budget.
+if (HAS_UI) {
+  const webRoot = path.relative(process.cwd(), WEB_DIST).split(path.sep).join('/') || '.';
+  app.use('/assets/*', serveStatic({ root: webRoot }));
+}
 
 // Real client IP. By default trust the socket address (not spoofable); set
 // PIXA_TRUST_PROXY=1 to honor X-Forwarded-For when running behind a known proxy.
@@ -101,6 +121,19 @@ app.use(async (c, next) => {
   console.log(`[pixa-registry] ${c.req.method} ${c.req.path} -> ${c.res.status} (${Date.now() - start}ms)`);
 });
 
+// SPA fallback: browser GET navigation (Accept: text/html) outside /api gets the
+// UI shell; JSON clients (agents, curl) still hit the API routes at the same paths.
+if (HAS_UI) {
+  app.use(async (c, next) => {
+    if (c.req.method !== 'GET') return next();
+    const p = c.req.path;
+    if (p === '/api' || p.startsWith('/api/') || p.startsWith('/assets/')) return next();
+    const accept = c.req.header('accept') ?? '';
+    if (!accept.includes('text/html')) return next();
+    return c.html(readFileSync(path.join(WEB_DIST, 'index.html'), 'utf8'));
+  });
+}
+
 function qbool(v: string | undefined): boolean | undefined {
   if (v === undefined) return undefined;
   return v === 'true' || v === '1' || v === 'yes';
@@ -132,9 +165,11 @@ function parseFilters(c: Context): SearchFilters {
   return f;
 }
 
-// ── routes ───────────────────────────────────────────────────────────────────
+// ── routes (mounted at both / and /api) ───────────────────────────────────────
 
-app.get('/', (c) =>
+const api = new Hono();
+
+api.get('/', (c) =>
   c.json({
     service: 'PIXA Registry',
     description: 'Multichain, agent-native, verified discovery layer for machine-payable APIs.',
@@ -154,11 +189,11 @@ app.get('/', (c) =>
   }),
 );
 
-app.get('/health', (c) => c.json({ status: 'ok', service: 'pixa-registry', at: new Date().toISOString() }));
+api.get('/health', (c) => c.json({ status: 'ok', service: 'pixa-registry', at: new Date().toISOString() }));
 
-app.get('/networks', (c) => c.json({ networks: listNetworks() }));
+api.get('/networks', (c) => c.json({ networks: listNetworks() }));
 
-app.get('/categories', (c) => {
+api.get('/categories', (c) => {
   const withValidators = listValidatedCategories();
   const declared = Array.from(
     new Set(listServices().map((s) => s.category).filter((x): x is string => !!x)),
@@ -166,7 +201,7 @@ app.get('/categories', (c) => {
   return c.json({ withValidators, declared });
 });
 
-app.get('/stats', (c) => {
+api.get('/stats', (c) => {
   const all = listServices();
   const byStatus: Record<string, number> = {};
   const byTier: Record<string, number> = {};
@@ -177,7 +212,7 @@ app.get('/stats', (c) => {
   return c.json({ total: all.length, byStatus, byTier });
 });
 
-app.post('/services', async (c) => {
+api.post('/services', async (c) => {
   let body: unknown;
   try {
     body = await c.req.json();
@@ -202,20 +237,20 @@ app.post('/services', async (c) => {
   );
 });
 
-app.get('/services', (c) => {
+api.get('/services', (c) => {
   const filters = parseFilters(c);
   const limit = Math.min(500, Math.max(1, qint(c.req.query('limit'), 100)));
   const records = listFiltered(filters, limit);
   return c.json({ count: records.length, services: records });
 });
 
-app.get('/services/:id', (c) => {
+api.get('/services/:id', (c) => {
   const detail = getServiceDetail(c.req.param('id'));
   if (!detail) return c.json({ error: 'not_found' }, 404);
   return c.json(detail);
 });
 
-app.post('/services/:id/verify', async (c) => {
+api.post('/services/:id/verify', async (c) => {
   const id = c.req.param('id');
   const paid = qbool(c.req.query('paid')) === true;
   const summary = await reverify(id, { paid });
@@ -223,7 +258,7 @@ app.post('/services/:id/verify', async (c) => {
   return c.json({ status: summary.status, scores: summary.scores, warnings: summary.warnings, probes: summary.probes });
 });
 
-app.post('/services/:id/reviews', async (c) => {
+api.post('/services/:id/reviews', async (c) => {
   const id = c.req.param('id');
   let body: { rating?: number; comment?: string; author?: string };
   try {
@@ -238,7 +273,7 @@ app.post('/services/:id/reviews', async (c) => {
   return c.json({ review }, 201);
 });
 
-app.get('/search', (c) => {
+api.get('/search', (c) => {
   const query: SearchQuery = {
     q: c.req.query('q'),
     filters: parseFilters(c),
@@ -248,6 +283,9 @@ app.get('/search', (c) => {
   const results = search(query);
   return c.json({ query: query.q ?? null, count: results.length, results });
 });
+
+app.route('/api', api);
+app.route('/', api);
 
 app.notFound((c) => c.json({ error: 'not_found', path: c.req.path }, 404));
 app.onError((err, c) => {

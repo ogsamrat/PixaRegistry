@@ -112,6 +112,7 @@ export type TrustTier =
 
 export type TrustLabel =
   | 'Payment Verified'
+  | 'Gating Verified'
   | 'Schema Verified'
   | 'Category Verified'
   | 'Community Approved'

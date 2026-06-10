@@ -14,8 +14,10 @@
 //   pixa mcp                          start the MCP (stdio) server
 // =============================================================================
 
+import 'dotenv/config';
 import type { SearchFilters } from './types.js';
 import { getDbPath } from './db/client.js';
+import { registerBuyersFromEnv } from './buyer/register.js';
 import { listNetworks } from './config/networks.js';
 import { search } from './search/search.js';
 import {
@@ -100,6 +102,7 @@ function printCards(results: ReturnType<typeof search>): void {
 
 async function main(): Promise<void> {
   const { cmd, positionals, flags } = parseArgs(process.argv.slice(2));
+  registerBuyersFromEnv();
 
   switch (cmd) {
     case 'init': {
@@ -247,7 +250,15 @@ async function main(): Promise<void> {
       const { serve } = await import('@hono/node-server');
       const { app } = await import('./api/server.js');
       const port = Number(str(flags.port) ?? process.env.PORT ?? 4055);
-      serve({ fetch: app.fetch, port }, () => console.log(`PIXA Registry API on http://localhost:${port}`));
+      const server = serve({ fetch: app.fetch, port }, () => console.log(`PIXA Registry API on http://localhost:${port}`));
+      server.on('error', (err: NodeJS.ErrnoException) => {
+        if (err.code === 'EADDRINUSE') {
+          console.error(`port ${port} is already in use — another instance is probably running (try --port ${port + 1})`);
+        } else {
+          console.error('server error:', err);
+        }
+        process.exit(1);
+      });
       break;
     }
 

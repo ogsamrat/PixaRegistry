@@ -7,6 +7,7 @@
 
 import { createHash } from 'node:crypto';
 import type { AdapterType, ServiceRecord, ServiceSubmission } from '../types.js';
+import type { X402Accept } from '../util/x402.js';
 import { canonicalNetworkId, resolveNetwork, walletCompatibilityFor } from '../config/networks.js';
 import { defaultScores } from '../trust/score.js';
 
@@ -145,4 +146,63 @@ export function normalizeSubmission(input: ServiceSubmission): ServiceRecord {
     createdAt: now,
     updatedAt: now,
   };
+}
+
+// Asset ids we can confidently name (Algorand USDC ASAs).
+const KNOWN_ASSET_TOKENS: Record<string, string> = {
+  '10458941': 'USDC', // testnet
+  '31566704': 'USDC', // mainnet
+};
+
+function tokenFromAccept(accept: X402Accept): string | null {
+  // EVM exact scheme puts the EIP-3009 token name in extra.name.
+  const extraName = accept.extra && typeof accept.extra.name === 'string' ? accept.extra.name : null;
+  if (extraName && extraName.length <= 12) return extraName;
+  if (accept.asset && KNOWN_ASSET_TOKENS[accept.asset]) return KNOWN_ASSET_TOKENS[accept.asset];
+  return null;
+}
+
+/**
+ * Fill payment fields the submitter left blank from a live 402 challenge.
+ * Declared values always win — the challenge only fills gaps, never overwrites,
+ * so mismatch *detection* (compareDeclared) keeps something to compare against.
+ */
+export function enrichFromAccepts(service: ServiceRecord, accepts: X402Accept[]): Partial<ServiceRecord> | null {
+  if (accepts.length === 0) return null;
+  const patch: Partial<ServiceRecord> = {};
+  const first = accepts[0];
+
+  if ((!service.paymentScheme || service.paymentScheme === 'unknown') && (first.scheme === 'exact' || first.scheme === 'upto')) {
+    patch.paymentScheme = first.scheme;
+  }
+
+  if (service.paymentNetworks.length === 0) {
+    const networks = accepts
+      .map((a) => a.network)
+      .filter((n): n is string => !!n)
+      .map(canonicalNetworkId)
+      .filter((v, i, arr) => arr.indexOf(v) === i);
+    if (networks.length) {
+      const resolved = networks.map(resolveNetwork);
+      patch.paymentNetworks = networks;
+      patch.supportsTestnet = resolved.some((n) => n?.isTestnet === true);
+      patch.supportsMainnet = resolved.some((n) => n?.isTestnet === false);
+      patch.walletCompatibility = walletCompatibilityFor(networks);
+      if (service.adapterType === 'unknown') patch.adapterType = inferAdapterType(networks);
+    }
+  }
+
+  if (!service.payTo && first.payTo) patch.payTo = first.payTo;
+
+  const token = service.token ?? tokenFromAccept(first);
+  if (!service.token && token) patch.token = token;
+
+  if (!service.priceAtomic && first.amount) {
+    patch.priceAtomic = first.amount;
+    if (!service.priceDisplay && token) {
+      patch.priceDisplay = derivePriceDisplay(undefined, first.amount, token);
+    }
+  }
+
+  return Object.keys(patch).length ? patch : null;
 }

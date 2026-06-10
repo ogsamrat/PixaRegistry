@@ -22,7 +22,14 @@ let _db: DB | null = null;
 let _raw: Database.Database | null = null;
 
 export function getDbPath(): string {
-  return process.env.PIXA_DB ? resolve(process.env.PIXA_DB) : DEFAULT_DB_PATH;
+  const env = process.env.PIXA_DB?.trim();
+  if (!env) {
+    // Serverless: only /tmp is writable; blob-persist mirrors it across starts.
+    if (process.env.VERCEL) return '/tmp/pixa.db';
+    return DEFAULT_DB_PATH;
+  }
+  if (env === ':memory:') return env; // resolve() would mangle the sentinel into a file path
+  return resolve(env);
 }
 
 export function getDb(): DB {

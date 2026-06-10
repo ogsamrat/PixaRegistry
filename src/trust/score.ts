@@ -41,6 +41,9 @@ export function computeScores(input: ScoreInputs): TrustScores {
     (a, b) => Date.parse(b.at) - Date.parse(a.at),
   );
   const recent = runs.slice(0, RECENT_WINDOW);
+  // Skipped probes (e.g. paid probe with no BuyerAdapter) are non-results:
+  // counting them as failures would wrongly drag reliability down / mark flaky.
+  const scoreable = recent.filter((r) => r.detail?.skipped !== true);
 
   if (recent.length === 0) {
     const base = defaultScores();
@@ -59,9 +62,9 @@ export function computeScores(input: ScoreInputs): TrustScores {
   const latestPaid = latest('paid');
 
   // ── reliability & uptime ──
-  const opRuns = recent.filter((r) => r.kind === 'health' || r.kind === 'unpaid');
+  const opRuns = scoreable.filter((r) => r.kind === 'health' || r.kind === 'unpaid');
   const uptime = opRuns.length ? opRuns.filter((r) => r.ok).length / opRuns.length : 0;
-  const reliability = recent.length ? recent.filter((r) => r.ok).length / recent.length : 0;
+  const reliability = scoreable.length ? scoreable.filter((r) => r.ok).length / scoreable.length : 0;
 
   // ── reachability / gating ──
   const reachable =
@@ -100,11 +103,12 @@ export function computeScores(input: ScoreInputs): TrustScores {
   const community = communityScore(input.ratingAverage, input.reviewCount);
 
   // ── tier ──
-  const tier = deriveTier({ recent, reachable, gatingOk, reliability, operational, schema, community });
+  const tier = deriveTier({ recent: scoreable, reachable, gatingOk, reliability, operational, schema, community });
 
   // ── labels ──
   const labels = deriveLabels({
     gatingOk,
+    paidOk: !!latestPaid?.ok,
     schema,
     domain,
     community,
@@ -147,6 +151,7 @@ function deriveTier(args: {
 
 function deriveLabels(args: {
   gatingOk: boolean;
+  paidOk: boolean;
   schema: number;
   domain: number | null;
   community: number | null;
@@ -155,7 +160,10 @@ function deriveLabels(args: {
   tier: TrustTier;
 }): TrustLabel[] {
   const labels: TrustLabel[] = [];
-  if (args.gatingOk) labels.push('Payment Verified');
+  // "Payment Verified" means a real payment settled (paid probe succeeded);
+  // a correct 402 challenge alone only proves gating.
+  if (args.paidOk) labels.push('Payment Verified');
+  if (args.gatingOk) labels.push('Gating Verified');
   if (args.schema >= 0.7) labels.push('Schema Verified');
   if (args.domain != null && args.domain >= 0.6) labels.push('Category Verified');
   if (args.community != null && args.community >= 0.7 && args.reviewCount >= 1)

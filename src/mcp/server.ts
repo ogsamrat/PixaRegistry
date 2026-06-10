@@ -9,6 +9,7 @@
 // stderr via console.error.
 // =============================================================================
 
+import 'dotenv/config';
 import { pathToFileURL } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -21,6 +22,7 @@ import {
   submitService,
 } from '../registry/service.js';
 import { search } from '../search/search.js';
+import { registerBuyersFromEnv } from '../buyer/register.js';
 
 function jsonContent(data: unknown): { content: { type: 'text'; text: string }[] } {
   return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
@@ -45,6 +47,7 @@ const filterShape = {
 
 export function buildServer(): McpServer {
   getDb(); // ensure tables exist
+  registerBuyersFromEnv();
 
   const server = new McpServer({ name: 'pixa-registry', version: '0.1.0' });
 

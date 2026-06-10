@@ -1,0 +1,132 @@
+@import "tailwindcss";
+
+/* Pixa monochrome theme — matches pixawallet.xyz (pixa-black / silver / chrome). */
+@theme {
+  --color-ink: #030303;
+  --color-panel: #0a0a0a;
+  --color-panel-2: #101010;
+  --color-edge: rgba(255, 255, 255, 0.12);
+  --color-edge-2: rgba(255, 255, 255, 0.22);
+  --color-fog: #a7a7a7;
+  --color-snow: #f4f4f4;
+  --color-accent: #d8d8d8;
+  --color-accent-2: #8d8d8d;
+
+  --color-tier-verified: #9fd4b4;
+  --color-tier-community: #aac9d1;
+  --color-tier-experimental: #d4c596;
+  --color-tier-flaky: #d4ab85;
+  --color-tier-broken: #d49595;
+  --color-tier-unverified: #8a8a8a;
+
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-display: "Space Grotesk", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+html {
+  background-color: var(--color-ink);
+  color-scheme: dark;
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: var(--font-sans);
+  color: var(--color-snow);
+  background:
+    radial-gradient(circle at 50% 0%, rgba(244, 244, 244, 0.07), transparent 34rem),
+    var(--color-ink);
+  text-rendering: geometricPrecision;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3 {
+  font-family: var(--font-display);
+  letter-spacing: 0;
+}
+
+/* Chrome text — white→silver metallic gradient (pixawallet.xyz .chrome-text). */
+.gradient-text {
+  background: linear-gradient(180deg, #ffffff 0%, #e8e8e8 28%, #8d8d8d 52%, #ffffff 78%, #b8b8b8 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  text-shadow: 0 0 46px rgba(255, 255, 255, 0.12);
+}
+
+/* Metal panel edge — frosted glass with a silver hairline (pixawallet.xyz .metal-panel). */
+.gradient-border {
+  position: relative;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.075), rgba(255, 255, 255, 0.025)),
+    var(--color-panel);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16);
+}
+.gradient-border::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(120deg, rgba(255, 255, 255, 0.28), rgba(255, 255, 255, 0.08));
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+}
+
+/* Silver glow (pixawallet.xyz shadow-silver). */
+.glow {
+  box-shadow:
+    0 0 64px rgba(216, 216, 216, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+
+.silver-line {
+  background: linear-gradient(90deg, transparent, rgba(244, 244, 244, 0.64), transparent);
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.rise {
+  animation: rise 0.6s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+.pulse-dot {
+  animation: pulse-dot 1.2s ease-in-out infinite;
+}
+
+::selection {
+  background: rgba(216, 216, 216, 0.24);
+  color: #ffffff;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: var(--color-ink);
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.16);
+  border-radius: 6px;
+}

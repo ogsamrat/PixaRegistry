@@ -47,7 +47,7 @@ PIXA Registry is **discovery + verification + agent usability** in one layer:
 npm install
 npm run seed         # create the SQLite DB + load sample listings (verifies the live ones)
 
-npm run start:api    # HTTP API   -> http://localhost:4055
+npm run start:api    # HTTP API + web UI -> http://localhost:4055
 npm run mcp          # MCP server -> stdio (for agents / Claude)
 npm run cli -- help  # CLI
 ```
@@ -62,6 +62,42 @@ npm run cli -- inspect <id>
 npm run cli -- verify --all
 npm run cli -- networks
 ```
+
+### Web UI
+
+A React + Vite + Tailwind seller interface lives in `web/`:
+
+```bash
+npm run web:build    # build web/dist — the API server then serves it at /
+npm run web:dev      # dev mode on :5173 with /api proxied to :4055
+```
+
+Routes: `/` (explore + live search), `/register` (4-step seller wizard with live
+verification), `/service/:id` (scores, probe timeline with on-chain txid links,
+reviews), `/dashboard` (all listings + per-row re-verify).
+
+### Paid verification on Algorand testnet
+
+The paid probe makes a **real x402 payment with on-chain USDC settlement**. Setup:
+
+```bash
+cp .env.example .env  # fill PIXA_BUYER_MNEMONIC / PIXA_SELLER_MNEMONIC
+npm run wallets       # opt both wallets into USDC (ASA 10458941) on testnet
+# fund the buyer with testnet USDC at https://faucet.circle.com (network: Algorand Testnet)
+npm run seller        # test x402 seller APIs -> http://localhost:4910
+npm run e2e           # submit -> verify -> PAY -> confirm settlement on the indexer
+```
+
+Mnemonics may be **24-word Pera HD phrases** (ARC-52 BIP32-Ed25519, account 0) or
+classic 25-word Algorand mnemonics — both are detected automatically. The e2e script
+registers the local test seller, runs a paid probe, waits for the indexer to confirm
+the USDC transfer, and asserts the service reaches `tier: verified` with the
+`Payment Verified` label. The settlement txid is stored on the probe run and shown
+by `inspect` and the web UI.
+
+The test seller (`src/test-seller/server.ts`) exposes three $0.001 endpoints that
+match the registry's domain validators: `GET /weather/current?city=`,
+`GET /otp/generate`, `GET /company/lookup?domain=`.
 
 ---
 
@@ -127,7 +163,11 @@ flowchart TD
 | `src/verify/` | `probe` (health / unpaid / paid), `schema-check`, `domain`, `runner`. |
 | `src/trust/score.ts` | Layered trust scores -> tier + labels + ranking. |
 | `src/search/` | `search` (lexical/hybrid + filters), `embeddings` (vector seam). |
-| `src/api/server.ts` · `src/mcp/server.ts` · `src/cli.ts` | The three surfaces. |
+| `src/buyer/` | `wallet` (HD + classic mnemonics), `algorand` (x402 buyer adapter), `register`. |
+| `src/test-seller/` | Local x402 seller APIs used to prove paid verification. |
+| `src/api/server.ts` · `src/mcp/server.ts` · `src/cli.ts` | The three surfaces (API also serves the web UI). |
+| `web/` | React + Vite + Tailwind seller UI (`/api`-mounted routes). |
+| `scripts/` | `wallet-setup.ts` (USDC opt-ins), `e2e.ts` (full paid-flow proof). |
 
 ---
 
@@ -148,6 +188,10 @@ flowchart TD
 | `POST /services/:id/reviews` | add a community review `{ rating, comment?, author? }` |
 | `GET /search` | ranked, agent-optimized result cards (`q` + filters + `limit/offset`) |
 
+All routes are mounted at both `/` (agent back-compat) and `/api` (used by the web
+UI). When `web/dist` exists the server also serves the UI: `/assets/*` statically
+and an SPA fallback for browser (`Accept: text/html`) GET requests.
+
 ### MCP server (agent-native)
 
 Stdio MCP server exposing five tools: `search_registry`, `inspect_service`,
@@ -160,6 +204,9 @@ Stdio MCP server exposing five tools: `search_registry`, `inspect_service`,
   }
 }
 ```
+
+> **Windows:** `npm` is a `.cmd` shim and cannot be spawned directly — use
+> `"command": "cmd", "args": ["/c", "npm", "run", "mcp"]` (or `npm.cmd`) instead.
 
 ### CLI
 
@@ -182,17 +229,26 @@ Trust is decomposed so the registry never overclaims:
 | **community** | user ratings / reviews |
 
 These roll up to a **tier** (`verified` · `community` · `experimental` · `flaky` ·
-`broken` · `unverified`) and presentation **labels** (`Payment Verified`,
-`Schema Verified`, `Category Verified`, `Community Approved`, …). Search ranking
-blends lexical relevance with these so verified, reliable, fresh services surface
-first; broken is hidden by default.
+`broken` · `unverified`) and presentation **labels**. `Gating Verified` means the
+endpoint returned a valid `402` challenge; **`Payment Verified` is only granted after
+a successful paid probe** — a real payment, settled on-chain, with the transaction id
+recorded. Search ranking blends lexical relevance with these so verified, reliable,
+fresh services surface first; broken is hidden by default.
 
 **How verification works:** `verifyService` runs **health -> unpaid -> declared-schema
 (-> optional paid)** probes, records each in `probe_runs`, recomputes the layered
 scores, derives a status, and persists. The **unpaid probe** expects `402` + a valid
 x402 `Payment-Required` challenge, parses the `accepts`, and compares them to the
 declared metadata — flagging `chain_mismatch`, `pay_to_mismatch`, `scheme_mismatch`,
-`asset_mismatch`, exactly the builder diagnostics the design calls for.
+`asset_mismatch`, exactly the builder diagnostics the design calls for. Payment
+fields the submitter left blank are filled from the live challenge (declared values
+always win and stay subject to mismatch checks).
+
+**The paid probe** picks a compatible `accepts` entry, signs an x402 payment with the
+registered buyer wallet (sent as both `payment-signature` and `x-payment` for v2/v1
+servers), and parses the `payment-response` header from the success response. The
+settlement (`txid`, network, payer) is stored on the probe run — on-chain proof, not
+a promise.
 
 ---
 
@@ -211,14 +267,16 @@ declared metadata — flagging `chain_mismatch`, `pay_to_mismatch`, `scheme_mism
 ## Status
 
 **Working:** submission -> validation -> normalization -> storage; live health + unpaid
-(`402`) verification with x402 challenge parsing and chain/payTo/scheme/amount matching;
-layered trust scoring, tiers, labels; lexical/hybrid search + structured filters + agent
+(`402`) verification with x402 challenge parsing and chain/payTo/scheme/amount/asset
+matching + challenge enrichment; **paid probes with real on-chain USDC settlement on
+Algorand testnet** (HD + classic wallet support, settlement txid recorded); layered
+trust scoring, tiers, labels; lexical/hybrid search + structured filters + agent
 result cards; multichain network registry + wallet compatibility; domain validators;
-reviews; all three surfaces.
+reviews; test x402 seller + e2e proof script; all three surfaces **plus the web UI**.
 
 **Seams (designed for, not yet wired):**
 
-- **Paid probe** — `BuyerAdapter` interface present; returns `skipped` until a wallet is registered.
+- **Paid probes beyond Algorand** — `BuyerAdapter` is pluggable; EVM/Solana buyers can register the same way.
 - **Embeddings / vector search** — `search/embeddings.ts` is the seam; the MVP ranks lexically.
 - **Optional LLM semantic checks** — fields exist; no LLM is called yet.
 - **SQLite** instead of Postgres/pgvector — schema kept Postgres-portable.
@@ -236,13 +294,22 @@ reviews; all three surfaces.
 | `PIXA_TRUST_PROXY` | _(unset)_ | honor `X-Forwarded-For` behind a proxy |
 | `PIXA_CORS_ORIGINS` | `*` | comma-separated CORS allowlist |
 | `PIXA_ALLOW_PRIVATE` | _(unset)_ | bypass SSRF guard (local dev only) |
+| `PIXA_BUYER_MNEMONIC` | _(unset)_ | enables paid probes — 24-word Pera HD or 25-word classic mnemonic |
+| `PIXA_BUYER_MAX_ATOMIC` | `100000` | paid-probe spend cap in atomic units (0.1 USDC) |
+| `PIXA_SELLER_MNEMONIC` | _(unset)_ | used by `npm run wallets` for the seller opt-in |
+| `PIXA_SELLER_ADDRESS` | seller wallet | `payTo` for the test seller |
+| `PIXA_TEST_SELLER_PORT` | `4910` | test seller port |
+| `FACILITATOR_URL` | goplausible | x402 facilitator used by the test seller |
+
+Secrets live in `.env` (gitignored, loaded via `dotenv`) — see `.env.example`.
 
 ---
 
 ## Roadmap
 
-Web UI + playground · real embeddings (pgvector) · live paid-probe buyer adapters ·
-reputation / attestations · scheduled re-verification workers · Postgres migration.
+EVM/Solana paid-probe buyer adapters · real embeddings (pgvector) · in-UI API
+playground · reputation / attestations · scheduled re-verification workers ·
+Postgres migration.
 
 ---
 

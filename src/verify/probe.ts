@@ -13,7 +13,7 @@
 import type { Diagnostic, DiagnosticCode, DiagnosticSeverity, ProbeResult, ServiceRecord } from '../types.js';
 import { timedFetch, safeJsonParse } from '../util/http.js';
 import { parseChallenge, type X402Accept } from '../util/x402.js';
-import { canonicalNetworkId } from '../config/networks.js';
+import { canonicalNetworkId, resolveNetwork } from '../config/networks.js';
 
 function dx(code: DiagnosticCode, severity: DiagnosticSeverity, message: string): Diagnostic {
   return { code, severity, message };
@@ -100,6 +100,25 @@ function compareDeclared(service: ServiceRecord, accepts: X402Accept[]): Diagnos
   if (service.paymentScheme !== 'unknown') {
     if (!matchAny(schemes, service.paymentScheme))
       diags.push(dx('scheme_mismatch', 'warning', `Declared scheme "${service.paymentScheme}" not offered in the live challenge.`));
+  }
+  if (service.token) {
+    const assets = accepts.map((a) => a.asset).filter((a): a is string => a != null);
+    if (assets.length) {
+      const token = service.token.trim();
+      const isId = /^\d+$/.test(token) || /^0x[0-9a-fA-F]+$/.test(token);
+      let matched = assets.some((a) => a.toLowerCase() === token.toLowerCase());
+      if (!matched && !isId) {
+        // Symbol declarations (e.g. "USDC") can't be compared to raw asset ids;
+        // accept if the challenge offers the network's canonical stablecoin.
+        matched = accepts.some(
+          (a) => a.asset != null && a.network != null && resolveNetwork(a.network)?.defaultAsset === a.asset,
+        );
+      }
+      if (!matched)
+        diags.push(
+          dx('asset_mismatch', 'warning', `Declared token/asset "${token}" not among live challenge assets [${assets.join(', ')}].`),
+        );
+    }
   }
   if (service.priceAtomic) {
     const amounts = accepts.map((a) => a.amount).filter((a): a is string => a != null);
@@ -197,8 +216,27 @@ export interface BuyerAdapter {
   id: string;
   /** Can this buyer settle the given accept option? */
   canPay(accept: X402Accept): boolean;
-  /** Produce the value for the `x-payment` header (base64), settling on-chain. */
+  /**
+   * Produce the base64 payment payload sent back to the seller. It is sent as
+   * both `payment-signature` (x402 v2) and `x-payment` (v1) headers.
+   */
   pay(service: ServiceRecord, accept: X402Accept): Promise<string>;
+}
+
+/**
+ * Parse the settlement receipt the seller returns on a successful paid call
+ * (`payment-response` / `x-payment-response`: base64 JSON with the on-chain
+ * transaction id, network, and payer).
+ */
+function parseSettlement(headers: Record<string, string>): Record<string, unknown> | undefined {
+  const raw = headers['payment-response'] ?? headers['x-payment-response'];
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(Buffer.from(raw, 'base64').toString('utf-8'));
+    return typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 let _buyer: BuyerAdapter | null = null;
@@ -239,31 +277,38 @@ export async function paidProbe(service: ServiceRecord, timeoutMs = 15000): Prom
       kind: 'paid',
       ok: false,
       diagnostics: [dx('paid_probe_skipped', 'warning', 'No challenge option this buyer can settle.')],
+      detail: { skipped: true },
       at: now(),
     };
   }
 
-  // 2) Settle + 3) call with payment header.
+  // 2) Settle + 3) call with payment headers (v2 reads `payment-signature`;
+  //    v1 servers read `x-payment` — send both for compatibility).
   try {
     const paymentHeader = await buyer.pay(service, accept);
     const { body, headers } = requestBodyFor(service);
     const res = await timedFetch(service.resourceUrl, {
       method: service.method,
-      headers: { ...headers, 'x-payment': paymentHeader },
+      headers: { ...headers, 'x-payment': paymentHeader, 'payment-signature': paymentHeader },
       body,
       timeoutMs,
     });
     const ok = res.ok && res.status >= 200 && res.status < 300;
     const parsed = safeJsonParse(res.bodyText);
+    const settlement = parseSettlement(res.headers);
+    const txid = typeof settlement?.transaction === 'string' ? settlement.transaction : undefined;
     return {
       kind: 'paid',
       ok,
       statusCode: res.status,
       latencyMs: res.latencyMs,
       diagnostics: ok
-        ? [dx('ok', 'info', `Paid call succeeded (HTTP ${res.status}).`)]
+        ? [dx('ok', 'info', `Paid call succeeded (HTTP ${res.status})${txid ? ` — settled on-chain, txid ${txid}` : ''}.`)]
         : [dx('settlement_failure', 'error', `Paid call returned ${res.status}.`)],
-      detail: { responseSample: parsed ?? res.bodyText.slice(0, 800) },
+      detail: {
+        responseSample: parsed ?? res.bodyText.slice(0, 800),
+        ...(settlement ? { settlement, txid: txid ?? null } : {}),
+      },
       at: now(),
     };
   } catch (err) {

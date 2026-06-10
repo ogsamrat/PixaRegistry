@@ -5,13 +5,16 @@
 // =============================================================================
 
 import type { ProbeResult, ProbeRun, ServiceRecord, ServiceStatus, TrustScores } from '../types.js';
+import type { X402Accept } from '../util/x402.js';
 import {
   getProbeRuns,
   getReviews,
   getService,
   recordProbeRun,
+  updateServicePayment,
   updateServiceVerification,
 } from '../registry/repository.js';
+import { enrichFromAccepts } from '../registry/normalize.js';
 import { computeScores } from '../trust/score.js';
 import { healthProbe, paidProbe, unpaidProbe } from './probe.js';
 import { validateDeclaredSchemas, matchesSchema } from './schema-check.js';
@@ -41,7 +44,7 @@ function deriveStatus(args: { reachable: boolean; gatingOk: boolean; warnings: n
 }
 
 export async function verifyService(serviceId: string, opts: VerifyOptions = {}): Promise<VerifySummary | undefined> {
-  const service = getService(serviceId);
+  let service = getService(serviceId);
   if (!service) return undefined;
 
   const probes: ProbeResult[] = [];
@@ -51,6 +54,16 @@ export async function verifyService(serviceId: string, opts: VerifyOptions = {})
 
   const unpaid = await unpaidProbe(service, opts.timeoutMs);
   probes.push(unpaid);
+
+  // Adopt payment terms the submitter omitted from the live 402 challenge
+  // (fills blanks only — declared values stay authoritative for mismatch checks).
+  if (unpaid.ok && Array.isArray(unpaid.detail?.accepts)) {
+    const patch = enrichFromAccepts(service, unpaid.detail.accepts as X402Accept[]);
+    if (patch) {
+      updateServicePayment(serviceId, patch);
+      service = getService(serviceId)!;
+    }
+  }
 
   const schema = validateDeclaredSchemas(service);
   probes.push(schema);
